@@ -87,15 +87,6 @@ Global options\n\
 #define MALLOC(ptr, len) ((ptr) = (__typeof__(ptr))malloc((len) * sizeof(*(ptr))))
 #define REALLOC(ptr, len) ((ptr) = (__typeof__(ptr))realloc((ptr), (len) * sizeof(*(ptr))))
 
-void print_rectest (FILE *fp, kseq_t *fqr, cutsites *cs) {
-    fprintf(fp, "@%s", fqr->name.s);
-    if (fqr->comment.l > 0) fprintf(fp, " %s\n", fqr->comment.s);
-    else fprintf(fp, "\n");
-    fprintf(fp, "%.*s\n", cs->three_prime_cut - cs->five_prime_cut, fqr->seq.s + cs->five_prime_cut);
-    fprintf(fp, "+\n");
-    fprintf(fp, "%.*s\n", cs->three_prime_cut - cs->five_prime_cut, fqr->qual.s + cs->five_prime_cut);
-}
-
 typedef struct { // global data structure for kt_pipeline()
     int block_len; // read at most block_len for each pipe
     int n_thread;  // use n_threads for trimming reads
@@ -256,7 +247,7 @@ static void *worker_pipeline(void *data, int step, void *in) // callback for kt_
 
             if (s->p->debug) {
                 printf("p1cut: %d,%d\n", s->pcut[i]->five_prime_cut, s->pcut[i]->three_prime_cut);
-                printf("p2cut: %d,%d\n", s->pcut[i+1]->five_prime_cut, s->pcut[i]->three_prime_cut);
+                printf("p2cut: %d,%d\n", s->pcut[i+1]->five_prime_cut, s->pcut[i+1]->three_prime_cut);
             }
 
             /* The sequence and quality print statements below print out the sequence string starting from the 5' cut */
