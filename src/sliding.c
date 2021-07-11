@@ -7,6 +7,8 @@
 #include "sickle.h"
 #include "kseq.h"
 
+#include <omp.h>
+
 int get_quality_num (char qualchar, int qualtype, kseq_t *fqrec, int pos) {
   /* 
      Return the adjusted quality, depending on quality type.
@@ -45,9 +47,10 @@ cutsites* sliding_window (kseq_t *fqrec, int qualtype, int length_threshold, int
 	cutsites* retvals;
     char *npos;
 
+    retvals = malloc(sizeof(cutsites));
+
 	/* discard if the length of the sequence is less than the length threshold */
     if (fqrec->seq.l < length_threshold) {
-		retvals = (cutsites*) malloc (sizeof(cutsites));
 		retvals->three_prime_cut = -1;
 		retvals->five_prime_cut = -1;
 		return (retvals);
@@ -130,7 +133,6 @@ cutsites* sliding_window (kseq_t *fqrec, int qualtype, int length_threshold, int
 
     if (debug) printf ("\n\n");
 
-	retvals = (cutsites*) malloc (sizeof(cutsites));
 	retvals->three_prime_cut = three_prime_cut;
 	retvals->five_prime_cut = five_prime_cut;
 	return (retvals);

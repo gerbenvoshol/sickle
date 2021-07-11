@@ -9,6 +9,8 @@
 #include "kseq.h"
 #include "print_record.h"
 
+#include "kthread.h"
+
 __KS_GETC(gzread, BUFFER_SIZE)
 __KS_GETUNTIL(gzread, BUFFER_SIZE)
 __KSEQ_READ
@@ -32,6 +34,9 @@ static struct option paired_long_options[] = {
     {"gzip-output", no_argument, 0, 'g'},
     {"output-combo-all", required_argument, 0, 'M'},
     {"quiet", no_argument, 0, 'z'},
+    {"n_thread", required_argument, 0, 'u'},
+    {"p_thread", required_argument, 0, 'U'},
+    {"block_size", required_argument, 0, 'b'},    
     {GETOPT_HELP_OPTION_DECL},
     {GETOPT_VERSION_OPTION_DECL},
     {NULL, 0, NULL, 0}
@@ -51,7 +56,10 @@ Paired-end separated reads\n\
 -f, --pe-file1, Input paired-end forward fastq file (Input files must have same number of records)\n\
 -r, --pe-file2, Input paired-end reverse fastq file\n\
 -o, --output-pe1, Output trimmed forward fastq file\n\
--p, --output-pe2, Output trimmed reverse fastq file. Must use -s option.\n\n\
+-p, --output-pe2, Output trimmed reverse fastq file. Must use -s option.\n\
+-u, --n_thread,   Number of worker threads to used [default:1]\n\
+-U, --p_thread,   Number of pipeline threads to used [default:3]\n\
+-b, --block_size, Number of sequences to read per time per thread [default:20000000]\n\n\
 Paired-end interleaved reads\n\
 ----------------------------\n");
     fprintf(stderr,"-c, --pe-combo, Combined (interleaved) input paired-end fastq\n\
@@ -75,6 +83,282 @@ Global options\n\
     exit(status);
 }
 
+#define CALLOC(ptr, len) ((ptr) = (__typeof__(ptr))calloc((len), sizeof(*(ptr))))
+#define MALLOC(ptr, len) ((ptr) = (__typeof__(ptr))malloc((len) * sizeof(*(ptr))))
+#define REALLOC(ptr, len) ((ptr) = (__typeof__(ptr))realloc((ptr), (len) * sizeof(*(ptr))))
+
+void print_rectest (FILE *fp, kseq_t *fqr, cutsites *cs) {
+    fprintf(fp, "@%s", fqr->name.s);
+    if (fqr->comment.l > 0) fprintf(fp, " %s\n", fqr->comment.s);
+    else fprintf(fp, "\n");
+    fprintf(fp, "%.*s\n", cs->three_prime_cut - cs->five_prime_cut, fqr->seq.s + cs->five_prime_cut);
+    fprintf(fp, "+\n");
+    fprintf(fp, "%.*s\n", cs->three_prime_cut - cs->five_prime_cut, fqr->qual.s + cs->five_prime_cut);
+}
+
+typedef struct { // global data structure for kt_pipeline()
+    int block_len; // read at most block_len for each pipe
+    int n_thread;  // use n_threads for trimming reads
+    kseq_t *ks[2]; // open 2 kseq_t files for reading PE
+    int qualtype;
+    int paired_length_threshold;
+    int paired_qual_threshold;
+    int no_fiveprime;
+    int trunc_n;
+    int debug;
+    gzFile pec;
+
+    int combo_all;
+    int gzip_output;
+    FILE *outfile1; /* forward output file handle */
+    FILE *outfile2; /* reverse output file handle */
+    FILE *combo;    /* combined output file handle */
+    FILE *single;   /* single output file handle */
+    gzFile outfile1_gzip;
+    gzFile outfile2_gzip;
+    gzFile combo_gzip;
+    gzFile single_gzip;
+
+    //Stats
+    int total;
+    int kept_p;
+    int kept_s1;
+    int kept_s2;
+    int discard_p;
+    int discard_s1;
+    int discard_s2;
+} pldat_t;
+
+typedef struct { // data structure for each step in kt_pipeline()
+    pldat_t *p;
+    int n, m, sum_len;
+    kseq_t *kseq; // Sequence data
+    cutsites **pcut; // trim results
+    //buf_c4_t *buf;
+} stepdat_t;
+
+static void worker_for(void *data, long i, int tid) // callback for kt_for()
+{
+    stepdat_t *s = (stepdat_t*)data;
+
+    // printf("%s\n", s->kseq[i].seq.s);
+    //printf("%i working on %li\n", tid, i);
+    s->pcut[i] = sliding_window(&s->kseq[i], s->p->qualtype, s->p->paired_length_threshold, s->p->paired_qual_threshold, s->p->no_fiveprime, s->p->trunc_n, s->p->debug);
+}
+
+static void *worker_pipeline(void *data, int step, void *in) // callback for kt_pipeline()
+{
+    pldat_t *p = (pldat_t*)data;
+    if (step == 0) { // step 1: read a block of sequences
+        int ret1, ret2;
+        stepdat_t *s;
+        CALLOC(s, 1);
+        s->p = p;
+        while ((ret1 = kseq_read(p->ks[0])) >= 0) {
+            
+            ret2 = kseq_read(p->ks[1]);
+            if (ret2 < 0) {
+                fprintf(stderr, "Warning: PE file 2 is shorter than PE file 1. Disregarding rest of PE file 1.\n");
+                break;
+            }
+
+            // Check if we have enough space left for at least 2 entries
+            if (s->n >= s->m - 2) {
+                s->m = s->m < 16? 16 : s->m + (s->n>>1);
+                REALLOC(s->kseq, s->m);
+            }
+            //Store PE1
+            //Copy name
+            MALLOC(s->kseq[s->n].name.s, p->ks[0]->name.l);
+            memcpy(s->kseq[s->n].name.s, p->ks[0]->name.s, p->ks[0]->name.l);
+            s->kseq[s->n].name.l = p->ks[0]->name.l;
+            s->kseq[s->n].name.s[p->ks[0]->name.l] = '\0';
+
+            //Copy comment
+            MALLOC(s->kseq[s->n].comment.s, p->ks[0]->comment.l);
+            memcpy(s->kseq[s->n].comment.s, p->ks[0]->comment.s, p->ks[0]->comment.l);
+            s->kseq[s->n].comment.l = p->ks[0]->comment.l;
+            s->kseq[s->n].comment.s[p->ks[0]->comment.l] = '\0';
+
+            //Copy sequence
+            MALLOC(s->kseq[s->n].seq.s, p->ks[0]->seq.l);
+            memcpy(s->kseq[s->n].seq.s, p->ks[0]->seq.s, p->ks[0]->seq.l);
+            s->kseq[s->n].seq.l = p->ks[0]->seq.l;
+            s->kseq[s->n].seq.s[p->ks[0]->seq.l] = '\0';
+
+            s->sum_len += p->ks[0]->seq.l;
+
+            //Copy quality
+            MALLOC(s->kseq[s->n].qual.s, p->ks[0]->qual.l);
+            memcpy(s->kseq[s->n].qual.s, p->ks[0]->qual.s, p->ks[0]->qual.l);
+            s->kseq[s->n].qual.l = p->ks[0]->qual.l;
+            s->kseq[s->n].qual.s[p->ks[0]->qual.l] = '\0';
+
+            //Increment to store PE read
+            s->n++;
+
+            //Store PE2
+            //Copy name
+            MALLOC(s->kseq[s->n].name.s, p->ks[1]->name.l);
+            memcpy(s->kseq[s->n].name.s, p->ks[1]->name.s, p->ks[1]->name.l);
+            s->kseq[s->n].name.l = p->ks[1]->name.l;
+            s->kseq[s->n].name.s[p->ks[1]->name.l] = '\0';
+
+            //Copy comment
+            MALLOC(s->kseq[s->n].comment.s, p->ks[1]->comment.l);
+            memcpy(s->kseq[s->n].comment.s, p->ks[1]->comment.s, p->ks[1]->comment.l);
+            s->kseq[s->n].comment.l = p->ks[1]->comment.l;
+            s->kseq[s->n].comment.s[p->ks[1]->comment.l] = '\0';
+
+            //Copy sequence
+            MALLOC(s->kseq[s->n].seq.s, p->ks[1]->seq.l);
+            memcpy(s->kseq[s->n].seq.s, p->ks[1]->seq.s, p->ks[1]->seq.l);
+            s->kseq[s->n].seq.l = p->ks[1]->seq.l;
+            s->kseq[s->n].seq.s[p->ks[1]->seq.l] = '\0';
+
+            s->sum_len += p->ks[1]->seq.l;
+
+            //Copy quality
+            MALLOC(s->kseq[s->n].qual.s, p->ks[1]->qual.l);
+            memcpy(s->kseq[s->n].qual.s, p->ks[1]->qual.s, p->ks[1]->qual.l);
+            s->kseq[s->n].qual.l = p->ks[1]->qual.l;
+            s->kseq[s->n].qual.s[p->ks[1]->qual.l] = '\0';
+
+            //Increment to store next PE read
+            s->n++;
+
+            // Filled block_size with sequence data
+            if (s->sum_len >= p->block_len) {
+                break;
+            }
+        }
+        // No sequences left
+        if (s->sum_len == 0) {
+            free(s);
+        // Filled a block_size with data to continue with step 2
+        } else {
+            //fprintf(stderr, "%s\n", s->kseq[s->n-1].name.s);
+            s->pcut = calloc(s->n, sizeof(struct cutsites *));
+            s->p->total += s->n; // add to total reads
+            fprintf(stderr, "\rRead: PE %i sequences (total %i)", s->n/2, s->p->total/2);
+            return s;
+        }
+    } else if (step == 1) { // step 2: trim sequences
+        stepdat_t *s = (stepdat_t*)in;
+
+        kt_for(p->n_thread, worker_for, s, s->n);
+
+        return s;
+    } else if (step == 2) { // step 3: Output files
+        stepdat_t *s = (stepdat_t*)in;
+
+        for (int i = 0; i < s->n - 1; i += 2) {
+
+            if (s->p->debug) {
+                printf("p1cut: %d,%d\n", s->pcut[i]->five_prime_cut, s->pcut[i]->three_prime_cut);
+                printf("p2cut: %d,%d\n", s->pcut[i+1]->five_prime_cut, s->pcut[i]->three_prime_cut);
+            }
+
+            /* The sequence and quality print statements below print out the sequence string starting from the 5' cut */
+            /* and then only print out to the 3' cut, however, we need to adjust the 3' cut */
+            /* by subtracting the 5' cut because the 3' cut was calculated on the original sequence */
+
+            /* if both sequences passed quality and length filters, then output both records */
+            if (s->pcut[i]->three_prime_cut >= 0 && s->pcut[i+1]->three_prime_cut >= 0) {
+                if (!s->p->gzip_output) {
+                    if (s->p->pec) {
+                        print_record(s->p->combo, &s->kseq[i], s->pcut[i]);
+                        print_record(s->p->combo, &s->kseq[i+1], s->pcut[i+1]);
+                    } else {
+                        print_record(s->p->outfile1, &s->kseq[i], s->pcut[i]);
+                        print_record(s->p->outfile2, &s->kseq[i+1], s->pcut[i+1]);
+                    }
+                } else {
+                    if (s->p->pec) {
+                        print_record_gzip (s->p->combo_gzip, &s->kseq[i], s->pcut[i]);
+                        print_record_gzip (s->p->combo_gzip, &s->kseq[i+1], s->pcut[i+1]);
+                    } else {
+                        print_record_gzip (s->p->outfile1_gzip, &s->kseq[i], s->pcut[i]);
+                        print_record_gzip (s->p->outfile2_gzip, &s->kseq[i+1], s->pcut[i+1]);
+                    }
+                }
+
+                s->p->kept_p += 2;
+            /* if only one sequence passed filter, then put its record in singles and discard the other */
+            /* or put an "N" record in if that option was chosen. */
+            } else if (s->pcut[i]->three_prime_cut >= 0 && s->pcut[i+1]->three_prime_cut < 0) {
+                    if (!s->p->gzip_output) {
+                        if (s->p->combo_all) {
+                            print_record (s->p->combo, &s->kseq[i], s->pcut[i]);
+                            print_record_N (s->p->combo, &s->kseq[i+1], s->p->qualtype);
+                        } else {
+                            print_record (s->p->single, &s->kseq[i], s->pcut[i]);
+                        }
+                    } else {
+                        if (s->p->combo_all) {
+                            print_record_gzip (s->p->combo_gzip, &s->kseq[i], s->pcut[i]);
+                            print_record_N_gzip (s->p->combo_gzip, &s->kseq[i+1], s->p->qualtype);
+                        } else {
+                            print_record_gzip (s->p->single_gzip, &s->kseq[i], s->pcut[i]);
+                        }
+                    }
+
+                    s->p->kept_s1++;
+                    s->p->discard_s2++;
+            } else if (s->pcut[i]->three_prime_cut < 0 && s->pcut[i+1]->three_prime_cut >= 0) {
+                if (!s->p->gzip_output) {
+                    if (s->p->combo_all) {
+                        print_record_N (s->p->combo, &s->kseq[i], s->p->qualtype);
+                        print_record (s->p->combo, &s->kseq[i+1], s->pcut[i+1]);
+                    } else {
+                        print_record (s->p->single, &s->kseq[i+1], s->pcut[i+1]);
+                    }
+                } else {
+                    if (s->p->combo_all) {
+                        print_record_N_gzip (s->p->combo_gzip, &s->kseq[i], s->p->qualtype);
+                        print_record_gzip (s->p->combo_gzip, &s->kseq[i+1], s->pcut[i+1]);
+                    } else {
+                        print_record_gzip (s->p->single_gzip, &s->kseq[i+1], s->pcut[i+1]);
+                    }
+                }
+
+                s->p->kept_s2++;
+                s->p->discard_s1++;
+            } else {
+
+                /* If both records are to be discarded, but the -M option */
+                /* is being used, then output two "N" records */
+                if (s->p->combo_all) {
+                    if (!s->p->gzip_output) {
+                        print_record_N (s->p->combo, &s->kseq[i], s->p->qualtype);
+                        print_record_N (s->p->combo, &s->kseq[i+1], s->p->qualtype);
+                    } else {
+                        print_record_N_gzip (s->p->combo_gzip, &s->kseq[i], s->p->qualtype);
+                        print_record_N_gzip (s->p->combo_gzip, &s->kseq[i+1], s->p->qualtype);
+                    }
+                }
+
+                s->p->discard_p += 2;
+            }
+        }
+
+        //Clean up
+        for (int i = 0; i < s->n; ++i) {
+            free(s->kseq[i].name.s);
+            free(s->kseq[i].comment.s);
+            free(s->kseq[i].seq.s);
+            free(s->kseq[i].qual.s);
+
+            free(s->pcut[i]);
+        }
+        free(s->kseq);
+
+        free(s->pcut);
+
+        free(s);
+    }
+    return 0;
+}
 
 int paired_main(int argc, char *argv[]) {
 
@@ -118,10 +402,13 @@ int paired_main(int argc, char *argv[]) {
     int combo_all=0;
     int combo_s=0;
     int total=0;
+    int n_thread = 1; // worker threads
+    int p_thread = 3; // pipeline threads
+    int block_size = 20000000;
 
     while (1) {
         int option_index = 0;
-        optc = getopt_long(argc, argv, "df:r:c:t:o:p:m:M:s:q:l:xng", paired_long_options, &option_index);
+        optc = getopt_long(argc, argv, "df:r:c:t:o:p:m:M:u:U:b:s:q:l:xng", paired_long_options, &option_index);
 
         if (optc == -1)
             break;
@@ -138,6 +425,16 @@ int paired_main(int argc, char *argv[]) {
         case 'r':
             infn2 = (char *) malloc(strlen(optarg) + 1);
             strcpy(infn2, optarg);
+            break;
+        
+        case 'u':
+            n_thread = atoi(optarg);
+            break;
+        case 'U':
+            p_thread = atoi(optarg);
+            break;
+        case 'b':
+            block_size = atoi(optarg);
             break;
 
         case 'c':
@@ -366,131 +663,72 @@ int paired_main(int argc, char *argv[]) {
         fqrec2 = kseq_init(pe2);
     }
 
-    while ((l1 = kseq_read(fqrec1)) >= 0) {
+    pldat_t pl;
+    if (pec) {
+        pl.ks[0] = kseq_init(pec);
+        pl.ks[1] = pl.ks[0];
+    } else {
+        pl.ks[0] = kseq_init(pe1);
+        pl.ks[1] = kseq_init(pe2);
+    }
+    pl.n_thread = n_thread;
+    pl.block_len = block_size;
+    pl.qualtype = qualtype;
+    pl.paired_length_threshold = paired_length_threshold;
+    pl.paired_qual_threshold = paired_qual_threshold;
+    pl.no_fiveprime = no_fiveprime;
+    pl.trunc_n = trunc_n;
+    pl.debug = debug;
+    pl.pec = pec;
 
-        l2 = kseq_read(fqrec2);
-        if (l2 < 0) {
-            fprintf(stderr, "Warning: PE file 2 is shorter than PE file 1. Disregarding rest of PE file 1.\n");
-            break;
-        }
+    pl.combo_all = combo_all;
+    pl.gzip_output = gzip_output;
+    pl.outfile1 = outfile1;
+    pl.outfile2 = outfile2;
+    pl.combo = combo;
+    pl.single = single;
+    pl.outfile1_gzip = outfile1_gzip;
+    pl.outfile2_gzip = outfile2_gzip;
+    pl.combo_gzip = combo_gzip;
+    pl.single_gzip = single_gzip;
 
-        p1cut = sliding_window(fqrec1, qualtype, paired_length_threshold, paired_qual_threshold, no_fiveprime, trunc_n, debug);
-        p2cut = sliding_window(fqrec2, qualtype, paired_length_threshold, paired_qual_threshold, no_fiveprime, trunc_n, debug);
-        total += 2;
+    //Stats
+    pl.total = 0;
+    pl.kept_p = 0;
+    pl.kept_s1 = 0;
+    pl.kept_s2 = 0;
+    pl.discard_p = 0;
+    pl.discard_s1 = 0;
+    pl.discard_s2 = 0;
 
-        if (debug) printf("p1cut: %d,%d\n", p1cut->five_prime_cut, p1cut->three_prime_cut);
-        if (debug) printf("p2cut: %d,%d\n", p2cut->five_prime_cut, p2cut->three_prime_cut);
+    kt_pipeline(8, worker_pipeline, &pl, 3);
 
-        /* The sequence and quality print statements below print out the sequence string starting from the 5' cut */
-        /* and then only print out to the 3' cut, however, we need to adjust the 3' cut */
-        /* by subtracting the 5' cut because the 3' cut was calculated on the original sequence */
-
-        /* if both sequences passed quality and length filters, then output both records */
-        if (p1cut->three_prime_cut >= 0 && p2cut->three_prime_cut >= 0) {
-            if (!gzip_output) {
-                if (pec) {
-                    print_record (combo, fqrec1, p1cut);
-                    print_record (combo, fqrec2, p2cut);
-                } else {
-                    print_record (outfile1, fqrec1, p1cut);
-                    print_record (outfile2, fqrec2, p2cut);
-                }
-            } else {
-                if (pec) {
-                    print_record_gzip (combo_gzip, fqrec1, p1cut);
-                    print_record_gzip (combo_gzip, fqrec2, p2cut);
-                } else {
-                    print_record_gzip (outfile1_gzip, fqrec1, p1cut);
-                    print_record_gzip (outfile2_gzip, fqrec2, p2cut);
-                }
-            }
-
-            kept_p += 2;
-        }
-
-        /* if only one sequence passed filter, then put its record in singles and discard the other */
-        /* or put an "N" record in if that option was chosen. */
-        else if (p1cut->three_prime_cut >= 0 && p2cut->three_prime_cut < 0) {
-            if (!gzip_output) {
-                if (combo_all) {
-                    print_record (combo, fqrec1, p1cut);
-                    print_record_N (combo, fqrec2, qualtype);
-                } else {
-                    print_record (single, fqrec1, p1cut);
-                }
-            } else {
-                if (combo_all) {
-                    print_record_gzip (combo_gzip, fqrec1, p1cut);
-                    print_record_N_gzip (combo_gzip, fqrec2, qualtype);
-                } else {
-                    print_record_gzip (single_gzip, fqrec1, p1cut);
-                }
-            }
-
-            kept_s1++;
-            discard_s2++;
-        }
-
-        else if (p1cut->three_prime_cut < 0 && p2cut->three_prime_cut >= 0) {
-            if (!gzip_output) {
-                if (combo_all) {
-                    print_record_N (combo, fqrec1, qualtype);
-                    print_record (combo, fqrec2, p2cut);
-                } else {
-                    print_record (single, fqrec2, p2cut);
-                }
-            } else {
-                if (combo_all) {
-                    print_record_N_gzip (combo_gzip, fqrec1, qualtype);
-                    print_record_gzip (combo_gzip, fqrec2, p2cut);
-                } else {
-                    print_record_gzip (single_gzip, fqrec2, p2cut);
-                }
-            }
-
-            kept_s2++;
-            discard_s1++;
-
-        } else {
-
-            /* If both records are to be discarded, but the -M option */
-            /* is being used, then output two "N" records */
-            if (combo_all) {
-                if (!gzip_output) {
-                    print_record_N (combo, fqrec1, qualtype);
-                    print_record_N (combo, fqrec2, qualtype);
-                } else {
-                    print_record_N_gzip (combo_gzip, fqrec1, qualtype);
-                    print_record_N_gzip (combo_gzip, fqrec2, qualtype);
-                }
-            }
-
-            discard_p += 2;
-        }
-
-        free(p1cut);
-        free(p2cut);
-    }             /* end of while ((l1 = kseq_read (fqrec1)) >= 0) */
-
-    if (l1 < 0) {
-        l2 = kseq_read(fqrec2);
+    if (kseq_read(pl.ks[0]) < 0) {
+        l2 = kseq_read(pl.ks[1]);
         if (l2 >= 0) {
             fprintf(stderr, "Warning: PE file 1 is shorter than PE file 2. Disregarding rest of PE file 2.\n");
         }
     }
 
+    if (pec) {
+        kseq_destroy(pl.ks[0]);
+    } else {
+        kseq_destroy(pl.ks[0]);
+        kseq_destroy(pl.ks[1]);
+    }
+
     if (!quiet) {
         if (infn1 && infn2) fprintf(stdout, "\nPE forward file: %s\nPE reverse file: %s\n", infn1, infn2);
         if (infnc) fprintf(stdout, "\nPE interleaved file: %s\n", infnc);
-        fprintf(stdout, "\nTotal input FastQ records: %d (%d pairs)\n", total, (total / 2));
-        fprintf(stdout, "\nFastQ paired records kept: %d (%d pairs)\n", kept_p, (kept_p / 2));
-        if (pec) fprintf(stdout, "FastQ single records kept: %d\n", (kept_s1 + kept_s2));
-        else fprintf(stdout, "FastQ single records kept: %d (from PE1: %d, from PE2: %d)\n", (kept_s1 + kept_s2), kept_s1, kept_s2);
+        fprintf(stdout, "\nTotal input FastQ records: %d (%d pairs)\n", pl.total, (pl.total / 2));
+        fprintf(stdout, "\nFastQ paired records kept: %d (%d pairs)\n", pl.kept_p, (pl.kept_p / 2));
+        if (pec) fprintf(stdout, "FastQ single records kept: %d\n", (pl.kept_s1 + pl.kept_s2));
+        else fprintf(stdout, "FastQ single records kept: %d (from PE1: %d, from PE2: %d)\n", (pl.kept_s1 + pl.kept_s2), pl.kept_s1, pl.kept_s2);
 
-        fprintf(stdout, "FastQ paired records discarded: %d (%d pairs)\n", discard_p, (discard_p / 2));
+        fprintf(stdout, "FastQ paired records discarded: %d (%d pairs)\n", pl.discard_p, (pl.discard_p / 2));
 
-        if (pec) fprintf(stdout, "FastQ single records discarded: %d\n\n", (discard_s1 + discard_s2));
-        else fprintf(stdout, "FastQ single records discarded: %d (from PE1: %d, from PE2: %d)\n\n", (discard_s1 + discard_s2), discard_s1, discard_s2);
+        if (pec) fprintf(stdout, "FastQ single records discarded: %d\n\n", (pl.discard_s1 + pl.discard_s2));
+        else fprintf(stdout, "FastQ single records discarded: %d (from PE1: %d, from PE2: %d)\n\n", (pl.discard_s1 + pl.discard_s2), pl.discard_s1, pl.discard_s2);
     }
 
     kseq_destroy(fqrec1);

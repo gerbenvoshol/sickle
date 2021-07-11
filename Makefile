@@ -1,8 +1,8 @@
 PROGRAM_NAME = sickle
 VERSION = 1.33
 CC = gcc
-CFLAGS = -Wall -pedantic -DVERSION=$(VERSION)
-DEBUG = -g
+CFLAGS = -Wall -pedantic -DVERSION=$(VERSION) -pthread
+DEBUG = -ggdb
 OPT = -O3
 ARCHIVE = $(PROGRAM_NAME)_$(VERSION)
 LDFLAGS=
@@ -12,6 +12,9 @@ SDIR = src
 .PHONY: clean default build distclean dist debug
 
 default: build
+
+kthread.o: $(SDIR)/kthread.c $(SDIR)/kseq.h $(SDIR)/sickle.h
+	$(CC) $(CFLAGS) $(OPT) -c $(SDIR)/$*.c
 
 sliding.o: $(SDIR)/sliding.c $(SDIR)/kseq.h $(SDIR)/sickle.h
 	$(CC) $(CFLAGS) $(OPT) -c $(SDIR)/$*.c
@@ -37,9 +40,9 @@ distclean: clean
 dist:
 	tar -zcf $(ARCHIVE).tar.gz src Makefile README.md sickle.xml LICENSE
 
-build: sliding.o trim_single.o trim_paired.o sickle.o print_record.o
+build: kthread.o sliding.o trim_single.o trim_paired.o sickle.o print_record.o
 	$(CC) $(CFLAGS) $(LDFLAGS) $(OPT) $? -o sickle $(LIBS)
 
 debug:
-	$(MAKE) build "CFLAGS=-Wall -pedantic -g -DDEBUG"
+	$(MAKE) build "CFLAGS=-Wall -pedantic -ggdb -DDEBUG -pthread"
 
