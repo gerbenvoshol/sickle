@@ -404,7 +404,7 @@ int paired_main(int argc, char *argv[]) {
     int total=0;
     int n_thread = 1; // worker threads
     int p_thread = 3; // pipeline threads
-    int block_size = 20000000;
+    int block_size = 20000000; // Total size of the sequence loaded per thread
 
     while (1) {
         int option_index = 0;
@@ -701,7 +701,7 @@ int paired_main(int argc, char *argv[]) {
     pl.discard_s1 = 0;
     pl.discard_s2 = 0;
 
-    kt_pipeline(8, worker_pipeline, &pl, 3);
+    kt_pipeline(p_thread, worker_pipeline, &pl, 3);
 
     if (kseq_read(pl.ks[0]) < 0) {
         l2 = kseq_read(pl.ks[1]);
