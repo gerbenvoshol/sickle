@@ -1,5 +1,7 @@
 # sickle - A windowed adaptive trimming tool for FASTQ files using quality
 
+# NOTE: This is a BETA version with multithreading support do NOT use in production!!!
+
 ## About
 
 Most modern sequencing technologies produce reads that have
@@ -48,7 +50,7 @@ local [Galaxy](http://galaxy.psu.edu/) server.
 Sickle doesn't have a paper, but you can cite this multithreaded version like this:
 
     Joshi NA, Fass JN., Voshol GP (2021). Sickle: A sliding-window, adaptive, quality-based trimming tool for FastQ files 
-    (Version 1.33) [Software].  Available at https://github.com/gerbenvoshol/sickle.
+    (Version 2.0) [Software].  Available at https://github.com/gerbenvoshol/sickle.
 
 ## Requirements 
 
