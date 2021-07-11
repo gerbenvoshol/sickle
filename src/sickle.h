@@ -17,22 +17,18 @@
 
 */
 
-#define BUFFER_SIZE 4096
-__KS_TYPE(gzFile)
-__KS_BASIC(gzFile, BUFFER_SIZE)
-__KSEQ_TYPE(gzFile)
-__KSEQ_BASIC(gzFile)
+KSEQ_INIT(gzFile, gzread)
 
 #ifndef PROGRAM_NAME
 #define PROGRAM_NAME "sickle"
 #endif
 
 #ifndef AUTHORS
-#define AUTHORS "Nikhil Joshi, UC Davis Bioinformatics Core\n"
+#define AUTHORS "Nikhil Joshi, UC Davis Bioinformatics Core\nGerben Voshol, "
 #endif
 
 #ifndef VERSION
-#define VERSION 0.0
+#define VERSION 2.00
 #endif
 
 /* Options drawn from GNU's coreutils/src/system.h */

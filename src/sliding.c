@@ -7,8 +7,6 @@
 #include "sickle.h"
 #include "kseq.h"
 
-#include <omp.h>
-
 int get_quality_num (char qualchar, int qualtype, kseq_t *fqrec, int pos) {
   /* 
      Return the adjusted quality, depending on quality type.

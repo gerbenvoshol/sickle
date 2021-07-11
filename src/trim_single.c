@@ -10,10 +10,6 @@
 
 #include "kthread.h"
 
-__KS_GETC(gzread, BUFFER_SIZE)
-__KS_GETUNTIL(gzread, BUFFER_SIZE)
-__KSEQ_READ
-
 int single_qual_threshold = 20;
 int single_length_threshold = 20;
 
