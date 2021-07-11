@@ -74,6 +74,8 @@ typedef struct {   // global data structure for kt_pipeline()
     int no_fiveprime;
     int trunc_n;
     int debug;
+    int quiet;
+
     gzFile pec;
 
     int combo_all;
@@ -164,7 +166,9 @@ static void *worker_pipeline(void *data, int step, void *in) // callback for kt_
             //fprintf(stderr, "%s\n", s->kseq[s->n-1].name.s);
             s->pcut = calloc(s->n, sizeof(struct cutsites *));
             s->p->total += s->n; // add to total reads
-            fprintf(stderr, "\rRead: SE %i sequences (total %i)", s->n, s->p->total);
+            if (!s->p->quiet) {
+                fprintf(stderr, "\rRead: SE %i sequences (total %i)", s->n, s->p->total);
+            }
             return s;
         }
     } else if (step == 1) { // step 2: trim sequences
@@ -376,6 +380,7 @@ int single_main(int argc, char *argv[]) {
     pl.no_fiveprime = no_fiveprime;
     pl.trunc_n = trunc_n;
     pl.debug = debug;
+    pl.quiet = quiet;
 
     pl.gzip_output = gzip_output;
     pl.outfile = outfile;

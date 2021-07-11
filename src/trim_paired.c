@@ -97,6 +97,8 @@ typedef struct { // global data structure for kt_pipeline()
     int no_fiveprime;
     int trunc_n;
     int debug;
+    int quiet;
+
     gzFile pec;
 
     int combo_all;
@@ -204,7 +206,7 @@ static void *worker_pipeline(void *data, int step, void *in) // callback for kt_
                 s->kseq[s->n].comment.l = p->ks[1]->comment.l;
                 s->kseq[s->n].comment.s[p->ks[1]->comment.l] = '\0';
             }
-            
+
             //Copy sequence
             MALLOC(s->kseq[s->n].seq.s, p->ks[1]->seq.l);
             memcpy(s->kseq[s->n].seq.s, p->ks[1]->seq.s, p->ks[1]->seq.l);
@@ -235,7 +237,9 @@ static void *worker_pipeline(void *data, int step, void *in) // callback for kt_
             //fprintf(stderr, "%s\n", s->kseq[s->n-1].name.s);
             s->pcut = calloc(s->n, sizeof(struct cutsites *));
             s->p->total += s->n; // add to total reads
-            fprintf(stderr, "\rRead: PE %i sequences (total %i)", s->n/2, s->p->total/2);
+            if (!s->p->quiet) {
+                fprintf(stderr, "\rRead: PE %i sequences (total %i)", s->n/2, s->p->total/2);
+            }
             return s;
         }
     } else if (step == 1) { // step 2: trim sequences
@@ -674,6 +678,8 @@ int paired_main(int argc, char *argv[]) {
     pl.no_fiveprime = no_fiveprime;
     pl.trunc_n = trunc_n;
     pl.debug = debug;
+    pl.quiet = quiet;
+
     pl.pec = pec;
 
     pl.combo_all = combo_all;
