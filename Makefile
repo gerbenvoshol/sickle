@@ -1,5 +1,5 @@
 PROGRAM_NAME = sickle
-VERSION = 1.33
+VERSION = 2.00
 CC = gcc
 CFLAGS = -Wall -pedantic -DVERSION=$(VERSION) -pthread
 DEBUG = -ggdb
