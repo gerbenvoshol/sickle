@@ -127,11 +127,13 @@ static void *worker_pipeline(void *data, int step, void *in) // callback for kt_
             s->kseq[s->n].name.s[p->ks->name.l] = '\0';
 
             //Copy comment
-            MALLOC(s->kseq[s->n].comment.s, p->ks->comment.l);
-            memcpy(s->kseq[s->n].comment.s, p->ks->comment.s, p->ks->comment.l);
-            s->kseq[s->n].comment.l = p->ks->comment.l;
-            s->kseq[s->n].comment.s[p->ks->comment.l] = '\0';
-
+            if (p->ks->comment.l) {
+                MALLOC(s->kseq[s->n].comment.s, p->ks->comment.l);
+                memcpy(s->kseq[s->n].comment.s, p->ks->comment.s, p->ks->comment.l);
+                s->kseq[s->n].comment.l = p->ks->comment.l;
+                s->kseq[s->n].comment.s[p->ks->comment.l] = '\0';
+            }
+            
             //Copy sequence
             MALLOC(s->kseq[s->n].seq.s, p->ks->seq.l);
             memcpy(s->kseq[s->n].seq.s, p->ks->seq.s, p->ks->seq.l);
@@ -174,7 +176,7 @@ static void *worker_pipeline(void *data, int step, void *in) // callback for kt_
     } else if (step == 2) { // step 3: Output files
         stepdat_t *s = (stepdat_t*)in;
 
-        for (int i = 0; i < s->n - 1; i++) {
+        for (int i = 0; i < s->n; i++) {
             
             if (s->p->debug) {
                 printf("P1cut: %d,%d\n", s->pcut[i]->five_prime_cut, s->pcut[i]->three_prime_cut);

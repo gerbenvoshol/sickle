@@ -166,10 +166,12 @@ static void *worker_pipeline(void *data, int step, void *in) // callback for kt_
             s->kseq[s->n].name.s[p->ks[0]->name.l] = '\0';
 
             //Copy comment
-            MALLOC(s->kseq[s->n].comment.s, p->ks[0]->comment.l);
-            memcpy(s->kseq[s->n].comment.s, p->ks[0]->comment.s, p->ks[0]->comment.l);
-            s->kseq[s->n].comment.l = p->ks[0]->comment.l;
-            s->kseq[s->n].comment.s[p->ks[0]->comment.l] = '\0';
+            if (p->ks[0]->comment.l) {
+                MALLOC(s->kseq[s->n].comment.s, p->ks[0]->comment.l);
+                memcpy(s->kseq[s->n].comment.s, p->ks[0]->comment.s, p->ks[0]->comment.l);
+                s->kseq[s->n].comment.l = p->ks[0]->comment.l;
+                s->kseq[s->n].comment.s[p->ks[0]->comment.l] = '\0';
+            }
 
             //Copy sequence
             MALLOC(s->kseq[s->n].seq.s, p->ks[0]->seq.l);
@@ -196,11 +198,13 @@ static void *worker_pipeline(void *data, int step, void *in) // callback for kt_
             s->kseq[s->n].name.s[p->ks[1]->name.l] = '\0';
 
             //Copy comment
-            MALLOC(s->kseq[s->n].comment.s, p->ks[1]->comment.l);
-            memcpy(s->kseq[s->n].comment.s, p->ks[1]->comment.s, p->ks[1]->comment.l);
-            s->kseq[s->n].comment.l = p->ks[1]->comment.l;
-            s->kseq[s->n].comment.s[p->ks[1]->comment.l] = '\0';
-
+            if (p->ks[0]->comment.l) {
+                MALLOC(s->kseq[s->n].comment.s, p->ks[1]->comment.l);
+                memcpy(s->kseq[s->n].comment.s, p->ks[1]->comment.s, p->ks[1]->comment.l);
+                s->kseq[s->n].comment.l = p->ks[1]->comment.l;
+                s->kseq[s->n].comment.s[p->ks[1]->comment.l] = '\0';
+            }
+            
             //Copy sequence
             MALLOC(s->kseq[s->n].seq.s, p->ks[1]->seq.l);
             memcpy(s->kseq[s->n].seq.s, p->ks[1]->seq.s, p->ks[1]->seq.l);
