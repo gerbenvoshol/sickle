@@ -1,7 +1,7 @@
 PROGRAM_NAME = sickle
 VERSION = 2.00
 CC = gcc
-CFLAGS = -Wall -pedantic -DVERSION=$(VERSION) -pthread
+CFLAGS = -Wall -std=c99 -DVERSION=$(VERSION) -pthread
 DEBUG = -ggdb
 OPT = -O3
 ARCHIVE = $(PROGRAM_NAME)_$(VERSION)
@@ -44,5 +44,5 @@ build: kthread.o sliding.o trim_single.o trim_paired.o sickle.o print_record.o
 	$(CC) $(CFLAGS) $(LDFLAGS) $(OPT) $? -o sickle $(LIBS)
 
 debug:
-	$(MAKE) build "CFLAGS=-Wall -pedantic -ggdb -DDEBUG -pthread"
+	$(MAKE) build "CFLAGS=-Wall -std=c99 -ggdb -DDEBUG -pthread"
 
