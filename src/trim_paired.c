@@ -11,6 +11,13 @@
 
 #include "kthread.h"
 
+__KS_BASIC(gzFile, 16384)
+__KS_GETC(gzread, 16384)
+__KS_GETUNTIL(gzread, 16384)
+
+__KSEQ_BASIC(, gzFile)
+__KSEQ_READ()
+
 int paired_qual_threshold = 20;
 int paired_length_threshold = 20;
 
@@ -123,15 +130,12 @@ typedef struct { // data structure for each step in kt_pipeline()
     int n, m, sum_len;
     kseq_t *kseq; // Sequence data
     cutsites **pcut; // trim results
-    //buf_c4_t *buf;
 } stepdat_t;
 
 static void worker_for(void *data, long i, int tid) // callback for kt_for()
 {
     stepdat_t *s = (stepdat_t*)data;
 
-    // printf("%s\n", s->kseq[i].seq.s);
-    //printf("%i working on %li\n", tid, i);
     s->pcut[i] = sliding_window(&s->kseq[i], s->p->qualtype, s->p->paired_length_threshold, s->p->paired_qual_threshold, s->p->no_fiveprime, s->p->trunc_n, s->p->debug);
 }
 
@@ -362,7 +366,7 @@ int paired_main(int argc, char *argv[]) {
     gzFile pec = NULL;          /* combined input file handle */
     kseq_t *fqrec1 = NULL;
     kseq_t *fqrec2 = NULL;
-    int l1, l2;
+    int l2;
     FILE *outfile1 = NULL;      /* forward output file handle */
     FILE *outfile2 = NULL;      /* reverse output file handle */
     FILE *combo = NULL;         /* combined output file handle */
@@ -375,8 +379,6 @@ int paired_main(int argc, char *argv[]) {
     int optc;
     extern char *optarg;
     int qualtype = -1;
-    cutsites *p1cut;
-    cutsites *p2cut;
     char *outfn1 = NULL;        /* forward file out name */
     char *outfn2 = NULL;        /* reverse file out name */
     char *outfnc = NULL;        /* combined file out name */
@@ -384,19 +386,12 @@ int paired_main(int argc, char *argv[]) {
     char *infn1 = NULL;         /* forward input filename */
     char *infn2 = NULL;         /* reverse input filename */
     char *infnc = NULL;         /* combined input filename */
-    int kept_p = 0;
-    int discard_p = 0;
-    int kept_s1 = 0;
-    int kept_s2 = 0;
-    int discard_s1 = 0;
-    int discard_s2 = 0;
     int quiet = 0;
     int no_fiveprime = 0;
     int trunc_n = 0;
     int gzip_output = 0;
     int combo_all=0;
     int combo_s=0;
-    int total=0;
     int n_thread = 1; // worker threads
     int p_thread = 3; // pipeline threads
     int block_size = 20000000; // Total size of the sequence loaded per thread
@@ -408,9 +403,10 @@ int paired_main(int argc, char *argv[]) {
         if (optc == -1)
             break;
 
+        if (paired_long_options[option_index].flag != 0)
+                continue;
+
         switch (optc) {
-            if (paired_long_options[option_index].flag != 0)
-                break;
 
         case 'f':
             infn1 = (char *) malloc(strlen(optarg) + 1);

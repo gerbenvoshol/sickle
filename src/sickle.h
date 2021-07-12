@@ -17,7 +17,8 @@
 
 */
 
-KSEQ_INIT(gzFile, gzread)
+__KS_TYPE(gzFile)
+__KSEQ_TYPE(gzFile)
 
 #ifndef PROGRAM_NAME
 #define PROGRAM_NAME "sickle"

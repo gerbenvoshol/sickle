@@ -10,6 +10,14 @@
 
 #include "kthread.h"
 
+__KS_BASIC(gzFile, 16384)
+__KS_GETC(gzread, 16384)
+__KS_GETUNTIL(gzread, 16384)
+
+  extern kseq_t *kseq_init(gzFile fd);
+  void kseq_destroy(kseq_t *ks);
+  int kseq_read(kseq_t *seq);
+
 int single_qual_threshold = 20;
 int single_length_threshold = 20;
 
@@ -90,15 +98,12 @@ typedef struct { // data structure for each step in kt_pipeline()
     int n, m, sum_len;
     kseq_t *kseq; // Sequence data
     cutsites **pcut; // trim results
-    //buf_c4_t *buf;
 } stepdat_t;
 
 static void worker_for(void *data, long i, int tid) // callback for kt_for()
 {
     stepdat_t *s = (stepdat_t*)data;
 
-    // printf("%s\n", s->kseq[i].seq.s);
-    //printf("%i working on %li\n", tid, i);
     s->pcut[i] = sliding_window(&s->kseq[i], s->p->qualtype, s->p->single_length_threshold, s->p->single_qual_threshold, s->p->no_fiveprime, s->p->trunc_n, s->p->debug);
 }
 
@@ -106,7 +111,7 @@ static void *worker_pipeline(void *data, int step, void *in) // callback for kt_
 {
     pldat_t *p = (pldat_t*)data;
     if (step == 0) { // step 1: read a block of sequences
-        int ret1, ret2;
+        int ret1;
         stepdat_t *s;
         CALLOC(s, 1);
         s->p = p;
@@ -221,24 +226,18 @@ static void *worker_pipeline(void *data, int step, void *in) // callback for kt_
 int single_main(int argc, char *argv[]) {
 
     gzFile se = NULL;
-    kseq_t *fqrec;
-    int l;
     FILE *outfile = NULL;
     gzFile outfile_gzip = NULL;
     int debug = 0;
     int optc;
     extern char *optarg;
     int qualtype = -1;
-    cutsites *p1cut;
     char *outfn = NULL;
     char *infn = NULL;
-    int kept = 0;
-    int discard = 0;
     int quiet = 0;
     int no_fiveprime = 0;
     int trunc_n = 0;
     int gzip_output = 0;
-    int total=0;
     int n_thread = 1; // worker threads
     int p_thread = 3; // pipeline threads
     int block_size = 20000000; // Total size of the sequence loaded per thread
@@ -250,9 +249,10 @@ int single_main(int argc, char *argv[]) {
         if (optc == -1)
             break;
 
+        if (single_long_options[option_index].flag != 0)
+            continue;
+
         switch (optc) {
-            if (single_long_options[option_index].flag != 0)
-                break;
 
         case 'f':
             infn = (char *) malloc(strlen(optarg) + 1);
@@ -393,7 +393,6 @@ int single_main(int argc, char *argv[]) {
 
     if (!quiet) fprintf(stdout, "\nSE input file: %s\n\nTotal FastQ records: %d\nFastQ records kept: %d\nFastQ records discarded: %d\n\n", infn, pl.total, pl.kept, pl.discard);
 
-    kseq_destroy(fqrec);
     gzclose(se);
     if (!gzip_output) fclose(outfile);
     else gzclose(outfile_gzip);
