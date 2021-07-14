@@ -94,5 +94,10 @@ typedef struct __cutsites_ {
 int single_main (int argc, char *argv[]);
 int paired_main (int argc, char *argv[]);
 cutsites* sliding_window (kseq_t *fqrec, int qualtype, int length_threshold, int qual_threshold, int no_fiveprime, int trunc_n, int debug);
+// Check from the name if the reads are from a two color system
+// Note: This function resets/rewinds the input stream, so check BEFORE when no sequences are read yet
+int check_two_color_system(kseq_t *read);
+// Trim 3prime (tail) of sequence if it contains a poly X of min_size length
+int trim_polyX(kseq_t *read, const char X, const int min_size);
 
 #endif /*SICKLE_H*/

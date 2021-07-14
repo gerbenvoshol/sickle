@@ -39,7 +39,9 @@ static struct option paired_long_options[] = {
     {"quiet", no_argument, 0, 'z'},
     {"n_thread", required_argument, 0, 'u'},
     {"p_thread", required_argument, 0, 'U'},
-    {"block_size", required_argument, 0, 'b'},    
+    {"block_size", required_argument, 0, 'b'},
+    {"trim_polyG", no_argument, 0, 'G'},
+    {"min_polyG", required_argument, 0, 'L'},    
     {GETOPT_HELP_OPTION_DECL},
     {GETOPT_VERSION_OPTION_DECL},
     {NULL, 0, NULL, 0}
@@ -59,10 +61,7 @@ Paired-end separated reads\n\
 -f, --pe-file1, Input paired-end forward fastq file (Input files must have same number of records)\n\
 -r, --pe-file2, Input paired-end reverse fastq file\n\
 -o, --output-pe1, Output trimmed forward fastq file\n\
--p, --output-pe2, Output trimmed reverse fastq file. Must use -s option.\n\
--u, --n_thread,   Number of worker threads to used [default:1]\n\
--U, --p_thread,   Number of pipeline threads to used [default:3]\n\
--b, --block_size, Number of sequences to read per time per thread [default:20000000]\n\n\
+-p, --output-pe2, Output trimmed reverse fastq file. Must use -s option.\n\n\
 Paired-end interleaved reads\n\
 ----------------------------\n");
     fprintf(stderr,"-c, --pe-combo, Combined (interleaved) input paired-end fastq\n\
@@ -75,7 +74,12 @@ Global options\n\
 -q, --qual-threshold, Threshold for trimming based on average quality in a window. Default 20.\n\
 -l, --length-threshold, Threshold to keep a read based on length after trimming. Default 20.\n\
 -x, --no-fiveprime, Don't do five prime trimming.\n\
--n, --truncate-n, Truncate sequences at position of first N.\n");
+-n, --truncate-n, Truncate sequences at position of first N.\n\
+-u, --n_thread,   Number of worker threads to used [default:1]\n\
+-U, --p_thread,   Number of pipeline threads to used [default:3]\n\
+-b, --block_size, Number of sequences to read per time per thread [default:20000000]\n\
+-G, --trim_polyG Enable trimming of poly G tails\n\
+-L, --min_polyG  Minimum length of poly G tail [Default:10]\n");
 
 
     fprintf(stderr, "-g, --gzip-output, Output gzipped files.\n--quiet, do not output trimming info\n\
@@ -101,6 +105,8 @@ typedef struct { // global data structure for kt_pipeline()
     int trunc_n;
     int debug;
     int quiet;
+    int trim_polyG; // Trim the 3prime poly G extension commonly found in the two color illumina system
+    int min_polyG;  // Minimum size of poly G tail
 
     gzFile pec;
 
@@ -123,6 +129,7 @@ typedef struct { // global data structure for kt_pipeline()
     int discard_p;
     int discard_s1;
     int discard_s2;
+    int polyG;
 } pldat_t;
 
 typedef struct { // data structure for each step in kt_pipeline()
@@ -136,7 +143,13 @@ static void worker_for(void *data, long i, int tid) // callback for kt_for()
 {
     stepdat_t *s = (stepdat_t*)data;
 
-    s->pcut[i] = sliding_window(&s->kseq[i], s->p->qualtype, s->p->paired_length_threshold, s->p->paired_qual_threshold, s->p->no_fiveprime, s->p->trunc_n, s->p->debug);
+    if (s->p->trim_polyG) {
+        s->p->polyG += trim_polyX(&s->kseq[i*2], 'G', s->p->min_polyG);
+        s->p->polyG += trim_polyX(&s->kseq[i*2+1], 'G', s->p->min_polyG);
+    }
+
+    s->pcut[i*2] = sliding_window(&s->kseq[i*2], s->p->qualtype, s->p->paired_length_threshold, s->p->paired_qual_threshold, s->p->no_fiveprime, s->p->trunc_n, s->p->debug);
+    s->pcut[i*2+1] = sliding_window(&s->kseq[i*2+1], s->p->qualtype, s->p->paired_length_threshold, s->p->paired_qual_threshold, s->p->no_fiveprime, s->p->trunc_n, s->p->debug);
 }
 
 static void *worker_pipeline(void *data, int step, void *in) // callback for kt_pipeline()
@@ -244,8 +257,8 @@ static void *worker_pipeline(void *data, int step, void *in) // callback for kt_
         }
     } else if (step == 1) { // step 2: trim sequences
         stepdat_t *s = (stepdat_t*)in;
-
-        kt_for(p->n_thread, worker_for, s, s->n);
+        // Handle pairs together
+        kt_for(p->n_thread, worker_for, s, s->n/2);
 
         return s;
     } else if (step == 2) { // step 3: Output files
@@ -395,10 +408,13 @@ int paired_main(int argc, char *argv[]) {
     int n_thread = 1; // worker threads
     int p_thread = 3; // pipeline threads
     int block_size = 20000000; // Total size of the sequence loaded per thread
+    int trim_polyG = 0; // Trim the 3prime poly G extension commonly found in the two color illumina system
+    int min_polyG = 10;  // Minimum size of poly G tail
+    int is_two_color_system = 0;
 
     while (1) {
         int option_index = 0;
-        optc = getopt_long(argc, argv, "df:r:c:t:o:p:m:M:u:U:b:s:q:l:xng", paired_long_options, &option_index);
+        optc = getopt_long(argc, argv, "df:r:c:t:o:p:m:M:u:U:b:s:q:l:xngL:G", paired_long_options, &option_index);
 
         if (optc == -1)
             break;
@@ -426,6 +442,12 @@ int paired_main(int argc, char *argv[]) {
             break;
         case 'b':
             block_size = atoi(optarg);
+            break;
+        case 'G':
+            trim_polyG = 1;
+            break;
+        case 'L':
+            min_polyG = atoi(optarg);
             break;
 
         case 'c':
@@ -662,6 +684,15 @@ int paired_main(int argc, char *argv[]) {
         pl.ks[0] = kseq_init(pe1);
         pl.ks[1] = kseq_init(pe2);
     }
+
+    // Check the read name of one of the sequences to see if it is from a two color system and reset the stream
+    if (!trim_polyG) {
+        is_two_color_system = check_two_color_system(pl.ks[0]); 
+        if (is_two_color_system) {
+            fprintf(stderr, "The reads might be from a two color system consider using --trim_polyG or -G\n");
+        }
+    }
+
     pl.n_thread = n_thread;
     pl.block_len = block_size;
     pl.qualtype = qualtype;
@@ -671,6 +702,8 @@ int paired_main(int argc, char *argv[]) {
     pl.trunc_n = trunc_n;
     pl.debug = debug;
     pl.quiet = quiet;
+    pl.trim_polyG = trim_polyG;
+    pl.min_polyG = min_polyG;
 
     pl.pec = pec;
 
@@ -693,6 +726,7 @@ int paired_main(int argc, char *argv[]) {
     pl.discard_p = 0;
     pl.discard_s1 = 0;
     pl.discard_s2 = 0;
+    pl.polyG = 0;
 
     kt_pipeline(p_thread, worker_pipeline, &pl, 3);
 
@@ -711,17 +745,34 @@ int paired_main(int argc, char *argv[]) {
     }
 
     if (!quiet) {
-        if (infn1 && infn2) fprintf(stdout, "\nPE forward file: %s\nPE reverse file: %s\n", infn1, infn2);
-        if (infnc) fprintf(stdout, "\nPE interleaved file: %s\n", infnc);
-        fprintf(stdout, "\nTotal input FastQ records: %d (%d pairs)\n", pl.total, (pl.total / 2));
+        if (infn1 && infn2) {
+            fprintf(stdout, "\nPE forward file: %s\nPE reverse file: %s\n", infn1, infn2);
+        }
+        
+        if (infnc) {
+            fprintf(stdout, "\nPE interleaved file: %s\n", infnc);
+        }
+
+        fprintf(stdout, "\nTotal input FastQ records: %d (%d pairs)\n", pl.total, (pl.total / 2));        
         fprintf(stdout, "\nFastQ paired records kept: %d (%d pairs)\n", pl.kept_p, (pl.kept_p / 2));
-        if (pec) fprintf(stdout, "FastQ single records kept: %d\n", (pl.kept_s1 + pl.kept_s2));
-        else fprintf(stdout, "FastQ single records kept: %d (from PE1: %d, from PE2: %d)\n", (pl.kept_s1 + pl.kept_s2), pl.kept_s1, pl.kept_s2);
+        
+        if (trim_polyG) {
+            fprintf(stdout, "\nFastQ records containing poly G tail: %d\n", pl.polyG); 
+        }
+
+        if (pec) {
+            fprintf(stdout, "FastQ single records kept: %d\n", (pl.kept_s1 + pl.kept_s2));
+        } else {
+            fprintf(stdout, "FastQ single records kept: %d (from PE1: %d, from PE2: %d)\n", (pl.kept_s1 + pl.kept_s2), pl.kept_s1, pl.kept_s2);
+        }
 
         fprintf(stdout, "FastQ paired records discarded: %d (%d pairs)\n", pl.discard_p, (pl.discard_p / 2));
 
-        if (pec) fprintf(stdout, "FastQ single records discarded: %d\n\n", (pl.discard_s1 + pl.discard_s2));
-        else fprintf(stdout, "FastQ single records discarded: %d (from PE1: %d, from PE2: %d)\n\n", (pl.discard_s1 + pl.discard_s2), pl.discard_s1, pl.discard_s2);
+        if (pec) {
+            fprintf(stdout, "FastQ single records discarded: %d\n\n", (pl.discard_s1 + pl.discard_s2));
+        } else {
+            fprintf(stdout, "FastQ single records discarded: %d (from PE1: %d, from PE2: %d)\n\n", (pl.discard_s1 + pl.discard_s2), pl.discard_s1, pl.discard_s2);
+        }
     }
 
     kseq_destroy(fqrec1);

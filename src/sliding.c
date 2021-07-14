@@ -7,6 +7,88 @@
 #include "sickle.h"
 #include "kseq.h"
 
+__KS_BASIC(gzFile, 16384)
+__KS_GETC(gzread, 16384)
+__KS_GETUNTIL(gzread, 16384)
+
+extern kseq_t *kseq_init(gzFile fd);
+void kseq_destroy(kseq_t *ks);
+int kseq_read(kseq_t *seq);
+
+// pre is the refix to search in str, only requiring n matches (Note n should be shorter than strlen(pre))
+int prefix(const char *str, const char *pre, int n)
+{
+    return strncmp(pre, str, n) == 0;
+}
+
+// Check from the name if the reads are from a two color system
+// Note: This function resets/rewinds the input stream, so check BEFORE when no sequences are read yet
+int check_two_color_system(kseq_t *read)
+{
+    int retval = 0;
+    int ret = 0;
+
+    // Get read
+    if ((ret = kseq_read(read)) < 0) {
+        switch (ret) {
+            case -1:
+                fprintf(stderr, "Unexpected end-of-file\n");
+                break;
+            case -2:
+                fprintf(stderr, "Truncated quality string\n");
+                break;
+            case -3:
+                fprintf(stderr, "Error while reading stream\n");
+                break;
+            default:
+                break;
+        }
+    }
+
+    // NEXTSEQ500, NEXTSEQ 550/550DX, NOVASEQ
+    if(prefix(read->name.s, "NS", 2) || prefix(read->name.s, "NB", 2) || prefix(read->name.s, "NDX", 3) || prefix(read->name.s, "A0", 2)) {
+        retval = 1;
+    }
+
+    // rewind the stream
+    ks_rewind(read->f);
+
+    return retval;
+}
+
+// Trim 3prime (tail) of sequence if it contains a poly X of min_size length
+int trim_polyX(kseq_t *read, const char X, const int min_size)
+{
+    const int one_mismatch_per = 8; // Allow one mismatch for each 8 base pairs
+    const int max_mismatch = 5;     // Allow maximum of 5 mismatches
+
+    int slen = read->seq.l - 1;
+    int mismatch = 0;
+    int i, allowed_mismatch, firstX = slen;
+    for(i = slen; i >= 0; i--) {
+        // Found another X update position
+        if(read->seq.s[i] == X) {
+            firstX = i;
+        // Not an X, add mismatch and check if we continue 
+        } else {
+        	mismatch++;
+	        allowed_mismatch = (slen - i + 1) / one_mismatch_per;
+	        if ((mismatch > max_mismatch) || (mismatch > allowed_mismatch && (slen - i - 1) >= min_size)) {
+	            break;
+	        }        
+        }
+    }
+
+    // If the poly X tail is long enough, trim the sequence
+    if ((slen - firstX) >= min_size) {
+        read->seq.l = firstX + 1;
+        read->qual.l = firstX + 1;
+        return 1;
+    }
+
+    return 0;
+}
+
 int get_quality_num (char qualchar, int qualtype, kseq_t *fqrec, int pos) {
   /* 
      Return the adjusted quality, depending on quality type.

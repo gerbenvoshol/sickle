@@ -14,9 +14,9 @@ __KS_BASIC(gzFile, 16384)
 __KS_GETC(gzread, 16384)
 __KS_GETUNTIL(gzread, 16384)
 
-  extern kseq_t *kseq_init(gzFile fd);
-  void kseq_destroy(kseq_t *ks);
-  int kseq_read(kseq_t *seq);
+extern kseq_t *kseq_init(gzFile fd);
+void kseq_destroy(kseq_t *ks);
+int kseq_read(kseq_t *seq);
 
 int single_qual_threshold = 20;
 int single_length_threshold = 20;
@@ -79,6 +79,8 @@ typedef struct {   // global data structure for kt_pipeline()
     int trunc_n;
     int debug;
     int quiet;
+    int trim_polyG; // Trim the 3prime poly G extension commonly found in the two color illumina system
+    int min_polyG;  // Minimum size of poly G tail
 
     gzFile pec;
 
@@ -91,6 +93,7 @@ typedef struct {   // global data structure for kt_pipeline()
     int total;
     int kept;
     int discard;
+    int polyG;
 } pldat_t;
 
 typedef struct { // data structure for each step in kt_pipeline()
@@ -103,6 +106,10 @@ typedef struct { // data structure for each step in kt_pipeline()
 static void worker_for(void *data, long i, int tid) // callback for kt_for()
 {
     stepdat_t *s = (stepdat_t*)data;
+
+    if (s->p->trim_polyG) {
+        s->p->polyG += trim_polyX(&s->kseq[i], 'G', s->p->min_polyG);
+    }
 
     s->pcut[i] = sliding_window(&s->kseq[i], s->p->qualtype, s->p->single_length_threshold, s->p->single_qual_threshold, s->p->no_fiveprime, s->p->trunc_n, s->p->debug);
 }
@@ -241,10 +248,13 @@ int single_main(int argc, char *argv[]) {
     int n_thread = 1; // worker threads
     int p_thread = 3; // pipeline threads
     int block_size = 20000000; // Total size of the sequence loaded per thread
+    int trim_polyG = 0; // Trim the 3prime poly G extension commonly found in the two color illumina system
+    int min_polyG = 10;  // Minimum size of poly G tail
+    int is_two_color_system = 0;
 
     while (1) {
         int option_index = 0;
-        optc = getopt_long(argc, argv, "df:t:u:U:b:o:q:l:zxng", single_long_options, &option_index);
+        optc = getopt_long(argc, argv, "df:t:u:U:b:o:q:l:zxngL:G", single_long_options, &option_index);
 
         if (optc == -1)
             break;
@@ -280,6 +290,12 @@ int single_main(int argc, char *argv[]) {
             break;
         case 'b':
             block_size = atoi(optarg);
+            break;
+        case 'G':
+            trim_polyG = 1;
+            break;
+        case 'L':
+            min_polyG = atoi(optarg);
             break;
 
         case 'o':
@@ -368,6 +384,15 @@ int single_main(int argc, char *argv[]) {
 
     pldat_t pl;
     pl.ks = kseq_init(se);
+
+    // Check the read name of one of the sequences to see if it is from a two color system and reset the stream
+    if (!trim_polyG) {
+        is_two_color_system = check_two_color_system(pl.ks); 
+        if (is_two_color_system) {
+            fprintf(stderr, "The reads might be from a two color system consider using --trim_polyG or -G\n");
+        }
+    }
+
     pl.n_thread = n_thread;
     pl.block_len = block_size;
     pl.qualtype = qualtype;
@@ -377,6 +402,8 @@ int single_main(int argc, char *argv[]) {
     pl.trunc_n = trunc_n;
     pl.debug = debug;
     pl.quiet = quiet;
+    pl.trim_polyG = trim_polyG;
+    pl.min_polyG = min_polyG;
 
     pl.gzip_output = gzip_output;
     pl.outfile = outfile;
@@ -386,12 +413,23 @@ int single_main(int argc, char *argv[]) {
     pl.total = 0;
     pl.kept = 0;
     pl.discard = 0;
+    pl.polyG = 0;
 
     kt_pipeline(p_thread, worker_pipeline, &pl, 3);
 
     kseq_destroy(pl.ks);
 
-    if (!quiet) fprintf(stdout, "\nSE input file: %s\n\nTotal FastQ records: %d\nFastQ records kept: %d\nFastQ records discarded: %d\n\n", infn, pl.total, pl.kept, pl.discard);
+    if (!quiet) {
+        fprintf(stdout, "\nSE input file: %s\n", infn);
+        fprintf(stdout, "\nTotal FastQ records: %d\n", pl.total);
+        
+        if (trim_polyG) {
+            fprintf(stdout, "\nFastQ records containing poly G tail: %d\n", pl.polyG); 
+        }
+
+        fprintf(stdout, "FastQ records kept: %d\n", pl.kept);
+        fprintf(stdout, "FastQ records discarded: %d\n\n", pl.discard);
+    }
 
     gzclose(se);
     if (!gzip_output) fclose(outfile);
