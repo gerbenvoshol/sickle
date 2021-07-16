@@ -71,16 +71,26 @@ int trim_polyX(kseq_t *read, const char X, const int min_size)
             firstX = i;
         // Not an X, add mismatch and check if we continue 
         } else {
-        	mismatch++;
-	        allowed_mismatch = (slen - i + 1) / one_mismatch_per;
-	        if ((mismatch > max_mismatch) || (mismatch > allowed_mismatch && (slen - i - 1) >= min_size)) {
-	            break;
-	        }        
+        	mismatch++;        
+        }
+
+        allowed_mismatch = (slen - i + 1) / one_mismatch_per;
+        // NOTE: Leaving the minimum length requirement out, might lead to better quality trimming. More testing is required
+        if (mismatch > max_mismatch || (mismatch > allowed_mismatch && (slen - i + 1) >= min_size)) {
+            break;
         }
     }
 
     // If the poly X tail is long enough, trim the sequence
-    if ((slen - firstX) >= min_size) {
+    if ((slen - firstX + 1) >= min_size) {
+    	// printf("slen %i\n", slen);
+    	// printf("firstX %i\n", firstX);
+    	// printf("slen - firstX %i\n", slen - firstX + 1);
+    	// printf("mismatch %i\n", mismatch);
+    	// printf("max_mismatch %i\n", max_mismatch);
+    	// printf("allowed_mismatch %i\n", allowed_mismatch);
+    	// printf("%s\n", read->seq.s);
+    	// printf("%s\n", &read->seq.s[firstX]);
         read->seq.l = firstX + 1;
         read->qual.l = firstX + 1;
         return 1;
@@ -89,7 +99,7 @@ int trim_polyX(kseq_t *read, const char X, const int min_size)
     return 0;
 }
 
-int get_quality_num (char qualchar, int qualtype, kseq_t *fqrec, int pos) {
+int get_quality_num (const char qualchar, const int qualtype, const kseq_t *fqrec, const int pos) {
   /* 
      Return the adjusted quality, depending on quality type.
 
@@ -103,8 +113,10 @@ int get_quality_num (char qualchar, int qualtype, kseq_t *fqrec, int pos) {
   if (qual_value < quality_constants[qualtype][Q_MIN] || qual_value > quality_constants[qualtype][Q_MAX]) {
 	fprintf (stderr, "ERROR: Quality value (%d) does not fall within correct range for %s encoding.\n", qual_value, typenames[qualtype]);
 	fprintf (stderr, "Range for %s encoding: %d-%d\n", typenames[qualtype], quality_constants[qualtype][Q_MIN], quality_constants[qualtype][Q_MAX]);
-	fprintf (stderr, "FastQ record: %s\n", fqrec->name.s);
-	fprintf (stderr, "Quality string: %s\n", fqrec->qual.s);
+	if (fqrec) {
+		fprintf (stderr, "FastQ record: %s\n", fqrec->name.s);
+		fprintf (stderr, "Quality string: %s\n", fqrec->qual.s);
+	}
 	fprintf (stderr, "Quality char: '%c'\n", qualchar);
 	fprintf (stderr, "Quality position: %d\n", pos+1);
 	exit(1);
@@ -113,6 +125,43 @@ int get_quality_num (char qualchar, int qualtype, kseq_t *fqrec, int pos) {
   return (qual_value - quality_constants[qualtype][Q_OFFSET]);
 }
 
+// Filter out reads with percent_limit low quality base calls (relaible_phred) and more than n_base_limit N bases
+int quality_filter(kseq_t *read, const int reliable_phred, const int qualtype, const int percent_limit, const int n_base_limit, const int minimum_length)
+{
+	// Remove short reads
+	if (read->seq.l < minimum_length) {
+		read->seq.l = 0;
+		read->qual.l = 0;
+		return 1;
+	}
+
+	int slen = read->seq.l;
+    int low_quality_bases = 0;
+    int low_quality_base_limit = (int) (slen * percent_limit / 100.0);
+    int n_bases = 0;
+	// Determine sequence qualities (amount of N, amount of reliable bases)
+	for (int i = 0; i < slen; i++) {
+		if (read->seq.s[i] == 'N') {
+			n_bases++;
+			if (n_bases > n_base_limit) {
+				read->seq.l = 0;
+				read->qual.l = 0;
+				return 1;		
+			}
+		}
+
+		if (get_quality_num(read->qual.s[i], qualtype, NULL, i) < reliable_phred) {
+			low_quality_bases++;
+			if (low_quality_bases > low_quality_base_limit) {
+				read->seq.l = 0;
+				read->qual.l = 0;
+				return 1;
+			}
+		}
+	}
+
+	return 0;
+}
 
 cutsites* sliding_window (kseq_t *fqrec, int qualtype, int length_threshold, int qual_threshold, int no_fiveprime, int trunc_n, int debug) {
 

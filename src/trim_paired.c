@@ -70,7 +70,8 @@ Paired-end interleaved reads\n\
 Global options\n\
 --------------\n\
 -t, --qual-type, Type of quality values (solexa (CASAVA < 1.3), illumina (CASAVA 1.3 to 1.7), sanger (which is CASAVA >= 1.8)) (required)\n");
-    fprintf(stderr, "-s, --output-single, Output trimmed singles fastq file\n\
+    fprintf(stderr, "\
+-s, --output-single, Output trimmed singles fastq file\n\
 -q, --qual-threshold, Threshold for trimming based on average quality in a window. Default 20.\n\
 -l, --length-threshold, Threshold to keep a read based on length after trimming. Default 20.\n\
 -x, --no-fiveprime, Don't do five prime trimming.\n\
@@ -78,10 +79,13 @@ Global options\n\
 -u, --n_thread,   Number of worker threads to used [default:1]\n\
 -U, --p_thread,   Number of pipeline threads to used [default:3]\n\
 -b, --block_size, Number of sequences to read per time per thread [default:20000000]\n\
--G, --trim_polyG Enable trimming of poly G tails\n\
--L, --min_polyG  Minimum length of poly G tail [Default:10]\n");
-
-
+-G, --trim_polyG Enable trimming of poly G tails [Default:disabled]\n\
+-L, --min_polyG  Minimum length of poly G tail [Default:10]\n\
+-Q, --quality_filtering, Enabled quality filtering [Default:disabled]\n\
+-R, --reliable_phred, Quality value that a base is reliable. [Default:15]\n\
+-P, --percent_limit, How many percents of bases are allowed to be unreliable (0~100). [Default:40]\n\
+-N, --n_base_limit, f more N bases than n_base_limit, this read/pair is discarded. [Default:5]\n\
+");
     fprintf(stderr, "-g, --gzip-output, Output gzipped files.\n--quiet, do not output trimming info\n\
 --help, display this help and exit\n\
 --version, output version information and exit\n\n");
@@ -105,8 +109,14 @@ typedef struct { // global data structure for kt_pipeline()
     int trunc_n;
     int debug;
     int quiet;
-    int trim_polyG; // Trim the 3prime poly G extension commonly found in the two color illumina system
-    int min_polyG;  // Minimum size of poly G tail
+    // Poly G trimming
+    int trim_polyG; // If enabled (1) Trim the 3prime poly G extension commonly found in the two color illumina system
+    int min_polyG;  // Minimum size of poly G tail. Default is 10
+    // Quality filtering
+    int quality_filtering; // If enabled (1) perform quality filtering
+    int reliable_phred;    // Quality value that a base is qualified/reliable. Default 15 means phred quality >=Q15 is qualified
+    int percent_limit;     // How many percents of bases are allowed to be unqualified (0~100). Default 40 means 40%
+    int n_base_limit;      // If more N bases than n_base_limit, this read/pair is discarded. Default is 5
 
     gzFile pec;
 
@@ -129,7 +139,8 @@ typedef struct { // global data structure for kt_pipeline()
     int discard_p;
     int discard_s1;
     int discard_s2;
-    int polyG;
+    int polyG;     // How many sequences contain a poly G tail
+    int Qfilter;   // How many sequences are removed due to quality_filtering
 } pldat_t;
 
 typedef struct { // data structure for each step in kt_pipeline()
@@ -142,6 +153,11 @@ typedef struct { // data structure for each step in kt_pipeline()
 static void worker_for(void *data, long i, int tid) // callback for kt_for()
 {
     stepdat_t *s = (stepdat_t*)data;
+
+    if (s->p->quality_filtering) {
+        s->p->Qfilter += quality_filter(&s->kseq[i*2], s->p->reliable_phred, s->p->qualtype, s->p->percent_limit, s->p->n_base_limit, s->p->paired_length_threshold);
+        s->p->Qfilter += quality_filter(&s->kseq[i*2+1], s->p->reliable_phred, s->p->qualtype, s->p->percent_limit, s->p->n_base_limit, s->p->paired_length_threshold);
+    }
 
     if (s->p->trim_polyG) {
         s->p->polyG += trim_polyX(&s->kseq[i*2], 'G', s->p->min_polyG);
@@ -405,16 +421,23 @@ int paired_main(int argc, char *argv[]) {
     int gzip_output = 0;
     int combo_all=0;
     int combo_s=0;
+    // Multithreading
     int n_thread = 1; // worker threads
     int p_thread = 3; // pipeline threads
     int block_size = 20000000; // Total size of the sequence loaded per thread
+    // Poly G trimming
     int trim_polyG = 0; // Trim the 3prime poly G extension commonly found in the two color illumina system
     int min_polyG = 10;  // Minimum size of poly G tail
     int is_two_color_system = 0;
+    // Quality filtering
+    int quality_filtering = 0; // If enabled (1) perform quality filtering
+    int reliable_phred = 15;   // Quality value that a base is qualified/reliable. Default 15 means phred quality >=Q15 is qualified
+    int percent_limit = 40;    // How many percents of bases are allowed to be unreliable (0~100). Default 40 means 40%
+    int n_base_limit = 5;      // If more N bases than n_base_limit, this read/pair is discarded. Default is 5
 
     while (1) {
         int option_index = 0;
-        optc = getopt_long(argc, argv, "df:r:c:t:o:p:m:M:u:U:b:s:q:l:xngL:G", paired_long_options, &option_index);
+        optc = getopt_long(argc, argv, "df:r:c:t:o:p:m:M:u:U:b:s:q:l:xngL:GQR:P:N:", paired_long_options, &option_index);
 
         if (optc == -1)
             break;
@@ -448,6 +471,18 @@ int paired_main(int argc, char *argv[]) {
             break;
         case 'L':
             min_polyG = atoi(optarg);
+            break;
+        case 'Q':
+            quality_filtering = 1;
+            break;
+        case 'R':
+            reliable_phred = atoi(optarg);
+            break;
+        case 'P':
+            percent_limit = atoi(optarg);
+            break;
+        case 'N':
+            n_base_limit = atoi(optarg);
             break;
 
         case 'c':
@@ -702,8 +737,14 @@ int paired_main(int argc, char *argv[]) {
     pl.trunc_n = trunc_n;
     pl.debug = debug;
     pl.quiet = quiet;
+
     pl.trim_polyG = trim_polyG;
     pl.min_polyG = min_polyG;
+
+    pl.quality_filtering = quality_filtering;
+    pl.reliable_phred = reliable_phred;
+    pl.percent_limit = percent_limit;
+    pl.n_base_limit = n_base_limit;
 
     pl.pec = pec;
 
@@ -753,12 +794,16 @@ int paired_main(int argc, char *argv[]) {
             fprintf(stdout, "\nPE interleaved file: %s\n", infnc);
         }
 
+        if (quality_filtering) {
+            fprintf(stdout, "\nFastQ records failed quality filtering: %d\n", pl.Qfilter); 
+        }
+
+        if (trim_polyG) {
+            fprintf(stdout, "\nFastQ records contained poly G tail: %d\n", pl.polyG); 
+        }
+        
         fprintf(stdout, "\nTotal input FastQ records: %d (%d pairs)\n", pl.total, (pl.total / 2));        
         fprintf(stdout, "\nFastQ paired records kept: %d (%d pairs)\n", pl.kept_p, (pl.kept_p / 2));
-        
-        if (trim_polyG) {
-            fprintf(stdout, "\nFastQ records containing poly G tail: %d\n", pl.polyG); 
-        }
 
         if (pec) {
             fprintf(stdout, "FastQ single records kept: %d\n", (pl.kept_s1 + pl.kept_s2));

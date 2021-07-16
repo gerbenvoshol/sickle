@@ -99,5 +99,8 @@ cutsites* sliding_window (kseq_t *fqrec, int qualtype, int length_threshold, int
 int check_two_color_system(kseq_t *read);
 // Trim 3prime (tail) of sequence if it contains a poly X of min_size length
 int trim_polyX(kseq_t *read, const char X, const int min_size);
+// Filter out reads with percent_limit low quality base calls (based on reliable_phred), have more than n_base_limit N bases or are shorter than minimum_length
+int quality_filter(kseq_t *read, const int reliable_phred, const int qualtype, const int percent_limit, const int n_base_limit, const int minimum_length);
+
 
 #endif /*SICKLE_H*/
